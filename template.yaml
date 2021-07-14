@@ -1,0 +1,187 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: 'AWS::Serverless-2016-10-31'
+Description: A starter AWS Lambda function.
+
+Resources:
+  #Scheduler Lambda function
+  SchedulerLambda:
+    Type: "AWS::Serverless::Function"
+    DependsOn: [SchedulerLambdaPolicy]
+    Properties:
+      Handler: index.schedulerHandler
+      Runtime: nodejs12.x
+      CodeUri: .
+      AutoPublishAlias: live
+      Description: "SchedulerLambda"
+      MemorySize: 256
+      Timeout: 120
+      Role: !GetAtt SchedulerLambdaRole.Arn
+      Environment:
+        Variables:
+          ENDPOINT_SECRET: "theguardian/api/theguardian-api-key"
+          APIURL: "https://content.guardianapis.com"
+          TABLE_NAME: !Ref dynamoTable
+
+  dynamoTable:
+    Type: 'AWS::DynamoDB::Table'
+    Properties:
+      TableName: cricket
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+
+  TheGuardianApiKey:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Description: theguardian-api-key
+      Name: "theguardian/api/theguardian-api-key"
+
+  ScheduledRule: 
+    Type: AWS::Events::Rule
+    Properties: 
+      Description: "ScheduledRule"
+      ScheduleExpression: "cron(0/10 * * * ? *)"
+      State: "ENABLED"
+      Targets: 
+        - 
+          Arn: 
+            Fn::GetAtt: 
+              - "SchedulerLambda"
+              - "Arn"
+          Id: "SchedulerLambda-event"
+          Input: '{}'
+          
+  PermissionForEventsToInvokeLambda:
+    Type: AWS::Lambda::Permission
+    Properties: 
+      FunctionName: 
+        Ref: "SchedulerLambda"
+      Action: "lambda:InvokeFunction"
+      Principal: "events.amazonaws.com"
+      SourceArn: 
+        Fn::GetAtt: 
+          - "ScheduledRule"
+          - "Arn"
+
+  SchedulerLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: "SchedulerLambda-role"
+      Path: /
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: [lambda.amazonaws.com]
+            Action: sts:AssumeRole
+
+  SchedulerLambdaPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: "SchedulerLambda-policy"
+      PolicyDocument:
+        Statement:
+          - Action: ["logs:CreateLogStream", "logs:PutLogEvents", "logs:CreateLogGroup"]
+            Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/LambdaTest-SchedulerLambda*"
+            Effect: Allow
+          - Action: ["secretsmanager:GetSecretValue"]
+            Resource: !Ref TheGuardianApiKey
+            Effect: Allow
+          - Action: ["dynamodb:*"]
+            Resource: !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/*"
+            Effect: Allow
+      Roles: [!Ref SchedulerLambdaRole] 
+
+  #DataFetch Lambda function
+  DataFetchLambda:
+    Type: "AWS::Serverless::Function"
+    DependsOn: [DataFetchLambdaPolicy]
+    Properties:
+      Handler: index.scanHandler
+      Runtime: nodejs12.x
+      CodeUri: .
+      AutoPublishAlias: live
+      Description: "nodejs12.x"
+      MemorySize: 256
+      Timeout: 120
+      Role: !GetAtt DataFetchLambdaRole.Arn
+      Environment:
+        Variables:
+          ENDPOINT_SECRET: "theguardian/api/theguardian-api-key"
+          TABLE_NAME: !Ref dynamoTable    
+      Events:
+        getAPI:
+          Type: Api
+          Properties:
+            Path: /
+            Method: ANY
+            Auth:
+              ApiKeyRequired: true
+
+  apiUsagePlan:
+    Type: AWS::ApiGateway::UsagePlan
+    DependsOn: [DataFetchLambda, DataFetchLambdagetAPIPermissionProd]
+    Properties:
+      ApiStages:
+         -
+          ApiId: !Ref ServerlessRestApi
+          Stage: Stage
+      Quota:
+        Limit: 1000
+        Period: DAY
+      Throttle:
+        BurstLimit: 100
+        RateLimit: 100
+      UsagePlanName: "DataFetchLambda-usage-plan"
+
+  ApiKey:
+    Type: 'AWS::ApiGateway::ApiKey'
+    DependsOn: [DataFetchLambda, DataFetchLambdagetAPIPermissionProd]
+    Properties:
+      Name: "DataFetchLambda-api-key"
+      Description: DataFetchLambda API Key V1
+      Enabled: 'true'
+      StageKeys:
+        - RestApiId: !Ref ServerlessRestApi
+          StageName: Stage
+
+  UsagePlanKey:
+    Type: AWS::ApiGateway::UsagePlanKey
+    DependsOn: [apiUsagePlan, ApiKey]
+    Properties:
+      KeyId: !Ref ApiKey
+      KeyType: API_KEY
+      UsagePlanId: !Ref apiUsagePlan
+
+  DataFetchLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: "DataFetchLambda-role"
+      Path: /
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: [lambda.amazonaws.com]
+            Action: sts:AssumeRole
+
+  DataFetchLambdaPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: "DataFetchLambda-policy"
+      PolicyDocument:
+        Statement:
+          - Action: ["logs:CreateLogStream", "logs:PutLogEvents", "logs:CreateLogGroup"]
+            Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/LambdaTest-DataFetchLambda*"
+            Effect: Allow
+          - Action: ["secretsmanager:GetSecretValue"]
+            Resource: !Ref TheGuardianApiKey
+            Effect: Allow
+          - Action: ["dynamodb:*"]
+            Resource: !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/*"
+            Effect: Allow
+      Roles: [!Ref DataFetchLambdaRole] 
